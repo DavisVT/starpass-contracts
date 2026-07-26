@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 7,
+    "address": 6,
     "nonce": 0
   },
   "auth": [
@@ -108,7 +108,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Bronze"
+                  "string": "Free"
                 },
                 {
                   "i128": {
@@ -117,7 +117,7 @@
                   }
                 },
                 {
-                  "u64": 2592000
+                  "u64": 86400
                 },
                 {
                   "u32": 0
@@ -570,7 +570,7 @@
                         "symbol": "duration"
                       },
                       "val": {
-                        "u64": 2592000
+                        "u64": 86400
                       }
                     },
                     {
@@ -594,7 +594,7 @@
                         "symbol": "name"
                       },
                       "val": {
-                        "string": "Bronze"
+                        "string": "Free"
                       }
                     },
                     {
@@ -1339,7 +1339,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Bronze"
+                  "string": "Free"
                 },
                 {
                   "i128": {
@@ -1348,7 +1348,7 @@
                   }
                 },
                 {
-                  "u64": 2592000
+                  "u64": 86400
                 },
                 {
                   "u32": 0
@@ -1387,7 +1387,7 @@
                   }
                 },
                 {
-                  "u64": 2592000
+                  "u64": 86400
                 }
               ]
             }
@@ -1434,18 +1434,11 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000006"
               },
               {
-                "symbol": "deactivate_tier"
+                "symbol": "get_tier_collection_metadata"
               }
             ],
             "data": {
-              "vec": [
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
-                },
-                {
-                  "u32": 1
-                }
-              ]
+              "u32": 1
             }
           }
         }
@@ -1461,88 +1454,14 @@
           "v0": {
             "topics": [
               {
-                "symbol": "log"
-              }
-            ],
-            "data": {
-              "vec": [
-                {
-                  "string": "caught panic 'Not the tier creator' from contract function 'Symbol(obj#291)'"
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
-                },
-                {
-                  "u32": 1
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": true
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000006",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "error"
+                "symbol": "fn_return"
               },
               {
-                "error": {
-                  "wasm_vm": "invalid_action"
-                }
+                "symbol": "get_tier_collection_metadata"
               }
             ],
             "data": {
-              "string": "caught error from function"
-            }
-          }
-        }
-      },
-      "failed_call": true
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "error"
-              },
-              {
-                "error": {
-                  "wasm_vm": "invalid_action"
-                }
-              }
-            ],
-            "data": {
-              "vec": [
-                {
-                  "string": "contract try_call failed"
-                },
-                {
-                  "symbol": "deactivate_tier"
-                },
-                {
-                  "vec": [
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
-                    },
-                    {
-                      "u32": 1
-                    }
-                  ]
-                }
-              ]
+              "string": "{\"name\":\"Free\",\"description\":\"StarPass tier collection by CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4\",\"attributes\":[{\"trait_type\":\"Creator\",\"value\":\"CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4\"},{\"trait_type\":\"Price\",\"value\":\"1000000\"},{\"trait_type\":\"Duration\",\"value\":\"86400\"},{\"trait_type\":\"MaxSupply\",\"value\":\"unlimited\"},{\"trait_type\":\"Minted\",\"value\":\"0\"},{\"trait_type\":\"Active\",\"value\":\"true\"}]}"
             }
           }
         }
