@@ -1,7 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, token, Address, BytesN, Env, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, token, Address, BytesN, Env, String,
+    Symbol, Vec,
 };
 
 // IMPLEMENTATION MAP:
@@ -93,26 +94,27 @@ pub enum DataKey {
 // ============================================================
 
 /// Contract-level errors (append-only)
-#[contracttype]
-#[derive(Clone, Debug)]
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
 pub enum Error {
     /// lock_period_seconds must be greater than zero
     // SECURITY: prevents a zero-length lock which would bypass escrow
-    InvalidLockPeriod,
+    InvalidLockPeriod = 1,
     /// No PendingEarning exists for the given creator and earning_id
-    EarningNotFound,
+    EarningNotFound = 2,
     /// The PendingEarning has already been released
     // SECURITY: prevents double-release/double-credit
-    EarningAlreadyReleased,
+    EarningAlreadyReleased = 3,
     /// An early release proposal already exists for this earning_id
-    ProposalAlreadyExists,
+    ProposalAlreadyExists = 4,
     /// No early release proposal exists for this earning_id
-    NoProposalFound,
+    NoProposalFound = 5,
     /// The calling creator does not match the proposal's intended creator
     // SECURITY: prevents cross-creator approval attacks
-    UnauthorizedApproval,
+    UnauthorizedApproval = 6,
     /// process_unlocked_earnings called but earning is not yet matured
-    EarningNotMatured,
+    EarningNotMatured = 7,
 }
 
 /// Pending earning held in escrow until unlock or early release
@@ -1127,8 +1129,7 @@ mod tests {
 
         let contract_id = env.register_contract(None, StarPassContract);
         let client = StarPassContractClient::new(&env, &contract_id);
-        let res = client.initialize(&admin, &token, &250u32, &3600u64);
-        assert!(res.is_ok());
+        client.initialize(&admin, &token, &250u32, &3600u64);
 
         (env, contract_id, admin, creator, fan, token)
     }
@@ -1145,8 +1146,7 @@ mod tests {
 
         let contract_id = env.register_contract(None, StarPassContract);
         let client = StarPassContractClient::new(&env, &contract_id);
-        let res = client.initialize(&admin, &token, &250u32, &3600u64);
-        assert!(res.is_ok());
+        client.initialize(&admin, &token, &250u32, &3600u64);
 
         assert_eq!(client.get_pass_count(), 0);
         assert_eq!(client.get_tier_count(), 0);
@@ -1275,11 +1275,8 @@ mod tests {
         client.mint_pass(&fan, &tier_id);
         // ACT: advance ledger past lock and process unlocked earnings
         env.ledger().set_timestamp(now + 3600 + 1);
-        let res = client.process_unlocked_earnings(&creator);
-        match res {
-            Ok(n) => assert_eq!(n, 1u32),
-            Err(_) => panic!("process_unlocked_earnings failed"),
-        }
+        let n = client.process_unlocked_earnings(&creator);
+        assert_eq!(n, 1u32);
         let creator_balance = client.get_creator_balance(&creator);
         assert_eq!(creator_balance, 975_000);
     }
@@ -1301,11 +1298,8 @@ mod tests {
         let start = env.ledger().timestamp();
         client.mint_pass(&fan, &tier_id);
         env.ledger().set_timestamp(start + 3600 + 1);
-        let res = client.process_unlocked_earnings(&creator);
-        match res {
-            Ok(n) => assert_eq!(n, 1u32),
-            Err(_) => panic!("process_unlocked_earnings failed"),
-        }
+        let n = client.process_unlocked_earnings(&creator);
+        assert_eq!(n, 1u32);
         assert_eq!(client.get_creator_balance(&creator), 975_000);
 
         client.withdraw(&creator);
@@ -1454,11 +1448,8 @@ mod tests {
         // Fee split applied twice (mint + renewal), pass_count untouched.
         // ACT: advance ledger past both unlocks and process
         env.ledger().set_timestamp(start + 1_000 + 3600 + 1);
-        let res = client.process_unlocked_earnings(&creator);
-        match res {
-            Ok(n) => assert_eq!(n, 2u32),
-            Err(_) => panic!("process_unlocked_earnings failed"),
-        }
+        let n = client.process_unlocked_earnings(&creator);
+        assert_eq!(n, 2u32);
         assert_eq!(client.get_creator_balance(&creator), 975_000 * 2);
         let profile = client.get_creator(&creator);
         assert_eq!(profile.total_earned, 975_000 * 2);
