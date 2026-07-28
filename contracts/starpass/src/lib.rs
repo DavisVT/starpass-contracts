@@ -1023,6 +1023,31 @@ impl StarPassContract {
             .unwrap_or(Vec::new(&env))
     }
 
+    /// Returns the total number of passes minted across all of a creator's tiers.
+    ///
+    /// Computed by summing `minted` over every tier owned by `creator`, rather
+    /// than returning the cached `Creator.pass_count` field, so it stays correct
+    /// even if that cache and the per-tier counts were ever to drift apart.
+    ///
+    /// Read-only, no auth required. Returns `0` if the creator has no tiers or
+    /// is not registered.
+    pub fn get_creator_pass_count(env: Env, creator: Address) -> u64 {
+        let tier_ids: Vec<u32> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CreatorTiers(creator))
+            .unwrap_or(Vec::new(&env));
+
+        let mut total: u64 = 0;
+        for tier_id in tier_ids.iter() {
+            let tier: Option<Tier> = env.storage().persistent().get(&DataKey::Tier(tier_id));
+            if let Some(tier) = tier {
+                total += tier.minted as u64;
+            }
+        }
+        total
+    }
+
     /// Get a paginated slice of tier IDs created by a creator.
     ///
     /// * `offset` — zero-based start index into the creator's tier list
@@ -1619,6 +1644,41 @@ mod tests {
 
         // limit=21 must panic with a clear message
         client.get_creator_tiers_page(&creator, &0u32, &21u32);
+    }
+
+    #[test]
+    fn test_creator_pass_count_no_tiers() {
+        let (env, contract_id, _admin, creator, _fan, _token) = setup_env();
+        let client = StarPassContractClient::new(&env, &contract_id);
+        client.register_creator(&creator);
+
+        assert_eq!(client.get_creator_pass_count(&creator), 0u64);
+    }
+
+    #[test]
+    fn test_creator_pass_count_sums_minted_across_tiers() {
+        let (env, contract_id, _admin, creator, fan, token) = setup_env();
+        StellarAssetClient::new(&env, &token).mint(&fan, &100_000_000);
+        let client = StarPassContractClient::new(&env, &contract_id);
+        client.register_creator(&creator);
+
+        let tier_ids = create_n_tiers(&env, &client, &creator, 3);
+        let tier_a = tier_ids.get(0).unwrap();
+        let tier_b = tier_ids.get(1).unwrap();
+        let tier_c = tier_ids.get(2).unwrap();
+
+        // Several mints on tier A, several on tier B, none on tier C.
+        client.mint_pass(&fan, &tier_a);
+        client.mint_pass(&fan, &tier_a);
+        client.mint_pass(&fan, &tier_a);
+        client.mint_pass(&fan, &tier_b);
+        client.mint_pass(&fan, &tier_b);
+
+        assert_eq!(client.get_tier(&tier_a).minted, 3);
+        assert_eq!(client.get_tier(&tier_b).minted, 2);
+        assert_eq!(client.get_tier(&tier_c).minted, 0);
+
+        assert_eq!(client.get_creator_pass_count(&creator), 5u64);
     }
 
     #[test]
