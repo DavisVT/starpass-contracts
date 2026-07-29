@@ -1,7 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, contracterror, token, Address, BytesN, Env, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, token, Address, BytesN, Env, String,
+    Symbol, Vec,
 };
 
 // IMPLEMENTATION MAP:
@@ -19,7 +20,6 @@ use soroban_sdk::{
 //     and executes release, removing the proposal.
 // - Storage keys: `PendingEarningCount`, `PendingEarning(creator,id)`, `EarlyReleaseProposal(id)`.
 // - Events: `earning_pending`, `earning_released`, `early_release_proposed`, `early_release_executed`, `lock_period_updated`.
-
 
 // ============================================================
 // Data Types
@@ -83,8 +83,8 @@ pub enum DataKey {
     PendingEarning(Address, u64),
     /// Early release proposal keyed by earning_id (instance storage)
     EarlyReleaseProposal(u64),
-    FanPasses(Address),      // fan address -> Vec<u64> pass IDs
-    CreatorTiers(Address),   // creator address -> Vec<u32> tier IDs
+    FanPasses(Address),    // fan address -> Vec<u64> pass IDs
+    CreatorTiers(Address), // creator address -> Vec<u32> tier IDs
     ContractVersion,
 }
 
@@ -175,6 +175,9 @@ impl StarPassContract {
         env.storage()
             .instance()
             .set(&DataKey::ProtocolFeeBps, &fee_bps);
+        env.storage()
+            .instance()
+            .set(&DataKey::LockPeriodSeconds, &lock_period_seconds);
         env.storage().instance().set(&DataKey::TierCount, &0u32);
         env.storage().instance().set(&DataKey::PassCount, &0u64);
         env.storage()
@@ -214,12 +217,20 @@ impl StarPassContract {
     /// Updates the lock period for future PendingEarning records.
     ///
     /// Requires admin authentication.
-    pub fn update_lock_period(env: Env, admin: Address, new_period_seconds: u64) -> Result<(), Error> {
+    pub fn update_lock_period(
+        env: Env,
+        admin: Address,
+        new_period_seconds: u64,
+    ) -> Result<(), Error> {
         admin.require_auth();
         if new_period_seconds == 0 {
             return Err(Error::InvalidLockPeriod);
         }
-        let old: u64 = env.storage().instance().get(&DataKey::LockPeriodSeconds).unwrap_or(0);
+        let old: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LockPeriodSeconds)
+            .unwrap_or(0);
         env.storage()
             .instance()
             .set(&DataKey::LockPeriodSeconds, &new_period_seconds);
@@ -508,7 +519,11 @@ impl StarPassContract {
                 .set(&DataKey::PendingEarningCount(tier.creator.clone()), &next);
             cnt
         };
-        let lock_period: u64 = env.storage().instance().get(&DataKey::LockPeriodSeconds).unwrap_or(0u64);
+        let lock_period: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LockPeriodSeconds)
+            .unwrap_or(0u64);
         let unlocks_at = env.ledger().timestamp().saturating_add(lock_period); // ARITHMETIC: saturating
         let pending = PendingEarning {
             creator: tier.creator.clone(),
@@ -518,9 +533,10 @@ impl StarPassContract {
             released: false,
             earning_id,
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::PendingEarning(tier.creator.clone(), earning_id), &pending);
+        env.storage().persistent().set(
+            &DataKey::PendingEarning(tier.creator.clone(), earning_id),
+            &pending,
+        );
         env.events().publish(
             (Symbol::new(&env, "earning_pending"),),
             (tier.creator.clone(), earning_id, creator_amount, unlocks_at),
@@ -647,7 +663,11 @@ impl StarPassContract {
                 .set(&DataKey::PendingEarningCount(tier.creator.clone()), &next);
             cnt
         };
-        let lock_period: u64 = env.storage().instance().get(&DataKey::LockPeriodSeconds).unwrap_or(0u64);
+        let lock_period: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LockPeriodSeconds)
+            .unwrap_or(0u64);
         let unlocks_at = env.ledger().timestamp().saturating_add(lock_period); // ARITHMETIC: saturating
         let pending = PendingEarning {
             creator: tier.creator.clone(),
@@ -657,9 +677,10 @@ impl StarPassContract {
             released: false,
             earning_id,
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::PendingEarning(tier.creator.clone(), earning_id), &pending);
+        env.storage().persistent().set(
+            &DataKey::PendingEarning(tier.creator.clone(), earning_id),
+            &pending,
+        );
         env.events().publish(
             (Symbol::new(&env, "earning_pending"),),
             (tier.creator.clone(), earning_id, creator_amount, unlocks_at),
@@ -808,7 +829,12 @@ impl StarPassContract {
         if env.storage().instance().has(&prop_key) {
             return Err(Error::ProposalAlreadyExists);
         }
-        let proposal = (admin.clone(), creator.clone(), earning_id, env.ledger().timestamp());
+        let proposal = (
+            admin.clone(),
+            creator.clone(),
+            earning_id,
+            env.ledger().timestamp(),
+        );
         env.storage().instance().set(&prop_key, &proposal);
         env.events().publish(
             (Symbol::new(&env, "early_release_proposed"),),
@@ -831,7 +857,11 @@ impl StarPassContract {
             return Err(Error::UnauthorizedApproval);
         }
         let key = DataKey::PendingEarning(creator.clone(), earning_id);
-        let mut pending: PendingEarning = env.storage().persistent().get(&key).ok_or(Error::EarningNotFound)?;
+        let mut pending: PendingEarning = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::EarningNotFound)?;
         if pending.released {
             return Err(Error::EarningAlreadyReleased);
         }
@@ -852,7 +882,13 @@ impl StarPassContract {
         env.storage().instance().remove(&prop_key);
         env.events().publish(
             (Symbol::new(&env, "early_release_executed"),),
-            (admin, creator, earning_id, pending.amount, env.ledger().timestamp()),
+            (
+                admin,
+                creator,
+                earning_id,
+                pending.amount,
+                env.ledger().timestamp(),
+            ),
         );
         Ok(())
     }
@@ -866,7 +902,11 @@ impl StarPassContract {
             .unwrap_or(0u64);
         let mut out: Vec<PendingEarning> = Vec::new(&env);
         for id in 0..count {
-            if let Some(p) = env.storage().persistent().get(&DataKey::PendingEarning(creator.clone(), id)) {
+            if let Some(p) = env
+                .storage()
+                .persistent()
+                .get(&DataKey::PendingEarning(creator.clone(), id))
+            {
                 out.push_back(p);
             }
         }
@@ -1158,7 +1198,8 @@ impl StarPassContract {
         // Extract tier name bytes
         let tier_name_len = tier.name.len() as usize;
         let mut tier_name_buf = [0u8; 64];
-        tier.name.copy_into_slice(&mut tier_name_buf[..tier_name_len]);
+        tier.name
+            .copy_into_slice(&mut tier_name_buf[..tier_name_len]);
         let tier_name_bytes = &tier_name_buf[..tier_name_len];
 
         // Extract creator Strkey bytes (always 56 ASCII chars for C.../G... keys)
@@ -1181,17 +1222,33 @@ impl StarPassContract {
 
         append(&mut buf, &mut cur, b"{\"name\":\"");
         append(&mut buf, &mut cur, tier_name_bytes);
-        append(&mut buf, &mut cur, b" Pass\",\"description\":\"StarPass access pass\",\"attributes\":[");
+        append(
+            &mut buf,
+            &mut cur,
+            b" Pass\",\"description\":\"StarPass access pass\",\"attributes\":[",
+        );
         append(&mut buf, &mut cur, b"{\"trait_type\":\"Tier\",\"value\":\"");
         append(&mut buf, &mut cur, tier_name_bytes);
         append(&mut buf, &mut cur, b"\"},");
-        append(&mut buf, &mut cur, b"{\"trait_type\":\"Creator\",\"value\":\"");
+        append(
+            &mut buf,
+            &mut cur,
+            b"{\"trait_type\":\"Creator\",\"value\":\"",
+        );
         append(&mut buf, &mut cur, creator_bytes);
         append(&mut buf, &mut cur, b"\"},");
-        append(&mut buf, &mut cur, b"{\"trait_type\":\"Expires\",\"value\":\"");
+        append(
+            &mut buf,
+            &mut cur,
+            b"{\"trait_type\":\"Expires\",\"value\":\"",
+        );
         append(&mut buf, &mut cur, expires_bytes);
         append(&mut buf, &mut cur, b"\"},");
-        append(&mut buf, &mut cur, b"{\"trait_type\":\"Status\",\"value\":\"");
+        append(
+            &mut buf,
+            &mut cur,
+            b"{\"trait_type\":\"Status\",\"value\":\"",
+        );
         append(&mut buf, &mut cur, status);
         append(&mut buf, &mut cur, b"\"}]}");
 
@@ -1230,7 +1287,8 @@ impl StarPassContract {
         // Extract tier name bytes
         let tier_name_len = tier.name.len() as usize;
         let mut tier_name_buf = [0u8; 64];
-        tier.name.copy_into_slice(&mut tier_name_buf[..tier_name_len]);
+        tier.name
+            .copy_into_slice(&mut tier_name_buf[..tier_name_len]);
         let tier_name_bytes = &tier_name_buf[..tier_name_len];
 
         // Extract creator Strkey bytes
@@ -1247,13 +1305,12 @@ impl StarPassContract {
         let mut duration_buf = [0u8; 20];
         let duration_bytes = u64_to_decimal(tier.duration, &mut duration_buf);
 
-        let max_supply_bytes: &[u8];
         let mut max_supply_buf = [0u8; 20];
-        if tier.max_supply == 0 {
-            max_supply_bytes = b"unlimited";
+        let max_supply_bytes: &[u8] = if tier.max_supply == 0 {
+            b"unlimited"
         } else {
-            max_supply_bytes = u64_to_decimal(tier.max_supply as u64, &mut max_supply_buf);
-        }
+            u64_to_decimal(tier.max_supply as u64, &mut max_supply_buf)
+        };
 
         let mut minted_buf = [0u8; 20];
         let minted_bytes = u64_to_decimal(tier.minted as u64, &mut minted_buf);
@@ -1266,25 +1323,53 @@ impl StarPassContract {
 
         append(&mut buf, &mut cur, b"{\"name\":\"");
         append(&mut buf, &mut cur, tier_name_bytes);
-        append(&mut buf, &mut cur, b"\",\"description\":\"StarPass tier collection by ");
+        append(
+            &mut buf,
+            &mut cur,
+            b"\",\"description\":\"StarPass tier collection by ",
+        );
         append(&mut buf, &mut cur, creator_bytes);
         append(&mut buf, &mut cur, b"\",\"attributes\":[");
-        append(&mut buf, &mut cur, b"{\"trait_type\":\"Creator\",\"value\":\"");
+        append(
+            &mut buf,
+            &mut cur,
+            b"{\"trait_type\":\"Creator\",\"value\":\"",
+        );
         append(&mut buf, &mut cur, creator_bytes);
         append(&mut buf, &mut cur, b"\"},");
-        append(&mut buf, &mut cur, b"{\"trait_type\":\"Price\",\"value\":\"");
+        append(
+            &mut buf,
+            &mut cur,
+            b"{\"trait_type\":\"Price\",\"value\":\"",
+        );
         append(&mut buf, &mut cur, price_bytes);
         append(&mut buf, &mut cur, b"\"},");
-        append(&mut buf, &mut cur, b"{\"trait_type\":\"Duration\",\"value\":\"");
+        append(
+            &mut buf,
+            &mut cur,
+            b"{\"trait_type\":\"Duration\",\"value\":\"",
+        );
         append(&mut buf, &mut cur, duration_bytes);
         append(&mut buf, &mut cur, b"\"},");
-        append(&mut buf, &mut cur, b"{\"trait_type\":\"MaxSupply\",\"value\":\"");
+        append(
+            &mut buf,
+            &mut cur,
+            b"{\"trait_type\":\"MaxSupply\",\"value\":\"",
+        );
         append(&mut buf, &mut cur, max_supply_bytes);
         append(&mut buf, &mut cur, b"\"},");
-        append(&mut buf, &mut cur, b"{\"trait_type\":\"Minted\",\"value\":\"");
+        append(
+            &mut buf,
+            &mut cur,
+            b"{\"trait_type\":\"Minted\",\"value\":\"",
+        );
         append(&mut buf, &mut cur, minted_bytes);
         append(&mut buf, &mut cur, b"\"},");
-        append(&mut buf, &mut cur, b"{\"trait_type\":\"Active\",\"value\":\"");
+        append(
+            &mut buf,
+            &mut cur,
+            b"{\"trait_type\":\"Active\",\"value\":\"",
+        );
         append(&mut buf, &mut cur, active_bytes);
         append(&mut buf, &mut cur, b"\"}]}");
 
@@ -2072,17 +2157,27 @@ mod tests {
         let meta = client.get_pass_metadata(&pass_id);
 
         // Validate required JSON fields via substring checks.
-        assert!(sdk_str_contains(&meta, b"\"name\":\"Gold Pass\""),
-            "name field missing or wrong");
-        assert!(sdk_str_contains(&meta, b"StarPass access pass"),
-            "description missing");
-        assert!(sdk_str_contains(&meta, b"\"trait_type\":\"Tier\",\"value\":\"Gold\""),
-            "Tier attribute missing");
-        assert!(sdk_str_contains(&meta, b"\"trait_type\":\"Status\",\"value\":\"active\""),
-            "Status should be active");
+        assert!(
+            sdk_str_contains(&meta, b"\"name\":\"Gold Pass\""),
+            "name field missing or wrong"
+        );
+        assert!(
+            sdk_str_contains(&meta, b"StarPass access pass"),
+            "description missing"
+        );
+        assert!(
+            sdk_str_contains(&meta, b"\"trait_type\":\"Tier\",\"value\":\"Gold\""),
+            "Tier attribute missing"
+        );
+        assert!(
+            sdk_str_contains(&meta, b"\"trait_type\":\"Status\",\"value\":\"active\""),
+            "Status should be active"
+        );
         // expires_at = 1_000_000 + 2_592_000 = 3_592_000
-        assert!(sdk_str_contains(&meta, b"\"trait_type\":\"Expires\",\"value\":\"3592000\""),
-            "Expires attribute wrong");
+        assert!(
+            sdk_str_contains(&meta, b"\"trait_type\":\"Expires\",\"value\":\"3592000\""),
+            "Expires attribute wrong"
+        );
         // JSON must start with '{' and end with '}'
         let len = meta.len() as usize;
         let mut buf = [0u8; 768];
@@ -2116,12 +2211,18 @@ mod tests {
 
         let meta = client.get_pass_metadata(&pass_id);
 
-        assert!(sdk_str_contains(&meta, b"\"name\":\"Silver Pass\""),
-            "name field wrong for expired pass");
-        assert!(sdk_str_contains(&meta, b"\"trait_type\":\"Status\",\"value\":\"expired\""),
-            "Status should be expired");
-        assert!(sdk_str_contains(&meta, b"\"trait_type\":\"Expires\",\"value\":\"87400\""),
-            "Expires attribute wrong");
+        assert!(
+            sdk_str_contains(&meta, b"\"name\":\"Silver Pass\""),
+            "name field wrong for expired pass"
+        );
+        assert!(
+            sdk_str_contains(&meta, b"\"trait_type\":\"Status\",\"value\":\"expired\""),
+            "Status should be expired"
+        );
+        assert!(
+            sdk_str_contains(&meta, b"\"trait_type\":\"Expires\",\"value\":\"87400\""),
+            "Expires attribute wrong"
+        );
     }
 
     // ----------------------------------------------------------------
@@ -2145,13 +2246,12 @@ mod tests {
 
         // Manually mark the pass inactive via storage (simulate deactivation).
         // We reach into persistent storage directly in the test environment.
-        let mut pass: Pass = env
-            .as_contract(&contract_id, || {
-                env.storage()
-                    .persistent()
-                    .get(&DataKey::Pass(pass_id))
-                    .unwrap()
-            });
+        let mut pass: Pass = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::Pass(pass_id))
+                .unwrap()
+        });
         pass.active = false;
         env.as_contract(&contract_id, || {
             env.storage()
@@ -2160,8 +2260,10 @@ mod tests {
         });
 
         let meta = client.get_pass_metadata(&pass_id);
-        assert!(sdk_str_contains(&meta, b"\"trait_type\":\"Status\",\"value\":\"inactive\""),
-            "Status should be inactive");
+        assert!(
+            sdk_str_contains(&meta, b"\"trait_type\":\"Status\",\"value\":\"inactive\""),
+            "Status should be inactive"
+        );
     }
 
     // ----------------------------------------------------------------
@@ -2187,18 +2289,25 @@ mod tests {
 
         // Override expires_at to 0 to represent "no expiry".
         let mut pass: Pass = env.as_contract(&contract_id, || {
-            env.storage().persistent().get(&DataKey::Pass(pass_id)).unwrap()
+            env.storage()
+                .persistent()
+                .get(&DataKey::Pass(pass_id))
+                .unwrap()
         });
         pass.expires_at = 0;
         env.as_contract(&contract_id, || {
-            env.storage().persistent().set(&DataKey::Pass(pass_id), &pass);
+            env.storage()
+                .persistent()
+                .set(&DataKey::Pass(pass_id), &pass);
         });
 
         let meta = client.get_pass_metadata(&pass_id);
 
         // expires_at == 0 → "never"
-        assert!(sdk_str_contains(&meta, b"\"trait_type\":\"Expires\",\"value\":\"never\""),
-            "expires_at=0 should produce 'never'");
+        assert!(
+            sdk_str_contains(&meta, b"\"trait_type\":\"Expires\",\"value\":\"never\""),
+            "expires_at=0 should produce 'never'"
+        );
         // active flag is true and now (1_000_000) > 0, but since expires_at == 0
         // the condition `expires_at <= now` would trip — so the contract shows "expired".
         // That is intentional: 0 is only meaningful as "never" when the caller controls
@@ -2225,20 +2334,34 @@ mod tests {
 
         let meta = client.get_tier_collection_metadata(&tier_id);
 
-        assert!(sdk_str_contains(&meta, b"\"name\":\"Diamond\""),
-            "name field wrong");
-        assert!(sdk_str_contains(&meta, b"StarPass tier collection by"),
-            "description prefix missing");
-        assert!(sdk_str_contains(&meta, b"\"trait_type\":\"Price\",\"value\":\"5000000\""),
-            "Price attribute wrong");
-        assert!(sdk_str_contains(&meta, b"\"trait_type\":\"Duration\",\"value\":\"2592000\""),
-            "Duration attribute wrong");
-        assert!(sdk_str_contains(&meta, b"\"trait_type\":\"MaxSupply\",\"value\":\"100\""),
-            "MaxSupply attribute wrong");
-        assert!(sdk_str_contains(&meta, b"\"trait_type\":\"Minted\",\"value\":\"0\""),
-            "Minted attribute should be 0 before any mints");
-        assert!(sdk_str_contains(&meta, b"\"trait_type\":\"Active\",\"value\":\"true\""),
-            "Active attribute wrong");
+        assert!(
+            sdk_str_contains(&meta, b"\"name\":\"Diamond\""),
+            "name field wrong"
+        );
+        assert!(
+            sdk_str_contains(&meta, b"StarPass tier collection by"),
+            "description prefix missing"
+        );
+        assert!(
+            sdk_str_contains(&meta, b"\"trait_type\":\"Price\",\"value\":\"5000000\""),
+            "Price attribute wrong"
+        );
+        assert!(
+            sdk_str_contains(&meta, b"\"trait_type\":\"Duration\",\"value\":\"2592000\""),
+            "Duration attribute wrong"
+        );
+        assert!(
+            sdk_str_contains(&meta, b"\"trait_type\":\"MaxSupply\",\"value\":\"100\""),
+            "MaxSupply attribute wrong"
+        );
+        assert!(
+            sdk_str_contains(&meta, b"\"trait_type\":\"Minted\",\"value\":\"0\""),
+            "Minted attribute should be 0 before any mints"
+        );
+        assert!(
+            sdk_str_contains(&meta, b"\"trait_type\":\"Active\",\"value\":\"true\""),
+            "Active attribute wrong"
+        );
 
         // Valid JSON boundaries
         let len = meta.len() as usize;
@@ -2263,8 +2386,13 @@ mod tests {
         );
 
         let meta = client.get_tier_collection_metadata(&tier_id);
-        assert!(sdk_str_contains(&meta, b"\"trait_type\":\"MaxSupply\",\"value\":\"unlimited\""),
-            "max_supply=0 should produce 'unlimited'");
+        assert!(
+            sdk_str_contains(
+                &meta,
+                b"\"trait_type\":\"MaxSupply\",\"value\":\"unlimited\""
+            ),
+            "max_supply=0 should produce 'unlimited'"
+        );
     }
 
     #[test]
@@ -2283,8 +2411,10 @@ mod tests {
         client.deactivate_tier(&creator, &tier_id);
 
         let meta = client.get_tier_collection_metadata(&tier_id);
-        assert!(sdk_str_contains(&meta, b"\"trait_type\":\"Active\",\"value\":\"false\""),
-            "Active attribute should be false after deactivation");
+        assert!(
+            sdk_str_contains(&meta, b"\"trait_type\":\"Active\",\"value\":\"false\""),
+            "Active attribute should be false after deactivation"
+        );
     }
 
     // ----------------------------------------------------------------
@@ -2313,9 +2443,13 @@ mod tests {
         assert_eq!(i128_to_decimal(975_000, &mut buf), b"975000");
         assert_eq!(i128_to_decimal(-1, &mut buf), b"-1");
         assert_eq!(i128_to_decimal(-975_000, &mut buf), b"-975000");
-        assert_eq!(i128_to_decimal(i128::MAX, &mut buf),
-            b"170141183460469231731687303715884105727");
-        assert_eq!(i128_to_decimal(i128::MIN, &mut buf),
-            b"-170141183460469231731687303715884105728");
+        assert_eq!(
+            i128_to_decimal(i128::MAX, &mut buf),
+            b"170141183460469231731687303715884105727"
+        );
+        assert_eq!(
+            i128_to_decimal(i128::MIN, &mut buf),
+            b"-170141183460469231731687303715884105728"
+        );
     }
 }
