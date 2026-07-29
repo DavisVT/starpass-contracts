@@ -20,7 +20,6 @@ use soroban_sdk::{
 // - Storage keys: `PendingEarningCount`, `PendingEarning(creator,id)`, `EarlyReleaseProposal(id)`.
 // - Events: `earning_pending`, `earning_released`, `early_release_proposed`, `early_release_executed`, `lock_period_updated`.
 
-
 // ============================================================
 // Data Types
 // ============================================================
@@ -66,11 +65,14 @@ pub struct Creator {
 /// Storage keys
 #[contracttype]
 pub enum DataKey {
+    /// Storage keys
     Admin,
     Token,          // USDC token address
     ProtocolFeeBps, // basis points e.g. 250 = 2.5%
     /// Duration in seconds that earnings are locked before becoming withdrawable
     LockPeriodSeconds,
+    /// Minimum threshold required for creator revenue withdrawals
+    MinWithdrawal, // <-- ADD THIS LINE
     Creator(Address),
     Tier(u32), // tier_id -> Tier
     TierCount,
@@ -83,8 +85,8 @@ pub enum DataKey {
     PendingEarning(Address, u64),
     /// Early release proposal keyed by earning_id (instance storage)
     EarlyReleaseProposal(u64),
-    FanPasses(Address),      // fan address -> Vec<u64> pass IDs
-    CreatorTiers(Address),   // creator address -> Vec<u32> tier IDs
+    FanPasses(Address),    // fan address -> Vec<u64> pass IDs
+    CreatorTiers(Address), // creator address -> Vec<u32> tier IDs
     ContractVersion,
 }
 
@@ -113,6 +115,10 @@ pub enum Error {
     UnauthorizedApproval,
     /// process_unlocked_earnings called but earning is not yet matured
     EarningNotMatured,
+    /// Requested withdrawal amount is below the configured minimum threshold
+    BelowMinWithdrawal, // <-- ADD THIS LINE
+    /// Specified minimum withdrawal threshold is invalid (e.g., negative)
+    InvalidMinWithdrawal, // <-- ADD THIS LINE
 }
 
 /// Pending earning held in escrow until unlock or early release
@@ -181,6 +187,11 @@ impl StarPassContract {
             .instance()
             .set(&DataKey::ContractVersion, &1u32);
 
+        // Set default minimum withdrawal threshold (1,000,000 stroops / 1 USDC)
+        env.storage()
+            .instance()
+            .set(&DataKey::MinWithdrawal, &1_000_000_i128);
+
         env.events().publish(
             (Symbol::new(&env, "initialized"),),
             (admin, token, fee_bps, lock_period_seconds),
@@ -214,12 +225,20 @@ impl StarPassContract {
     /// Updates the lock period for future PendingEarning records.
     ///
     /// Requires admin authentication.
-    pub fn update_lock_period(env: Env, admin: Address, new_period_seconds: u64) -> Result<(), Error> {
+    pub fn update_lock_period(
+        env: Env,
+        admin: Address,
+        new_period_seconds: u64,
+    ) -> Result<(), Error> {
         admin.require_auth();
         if new_period_seconds == 0 {
             return Err(Error::InvalidLockPeriod);
         }
-        let old: u64 = env.storage().instance().get(&DataKey::LockPeriodSeconds).unwrap_or(0);
+        let old: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LockPeriodSeconds)
+            .unwrap_or(0);
         env.storage()
             .instance()
             .set(&DataKey::LockPeriodSeconds, &new_period_seconds);
@@ -508,7 +527,11 @@ impl StarPassContract {
                 .set(&DataKey::PendingEarningCount(tier.creator.clone()), &next);
             cnt
         };
-        let lock_period: u64 = env.storage().instance().get(&DataKey::LockPeriodSeconds).unwrap_or(0u64);
+        let lock_period: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LockPeriodSeconds)
+            .unwrap_or(0u64);
         let unlocks_at = env.ledger().timestamp().saturating_add(lock_period); // ARITHMETIC: saturating
         let pending = PendingEarning {
             creator: tier.creator.clone(),
@@ -518,9 +541,10 @@ impl StarPassContract {
             released: false,
             earning_id,
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::PendingEarning(tier.creator.clone(), earning_id), &pending);
+        env.storage().persistent().set(
+            &DataKey::PendingEarning(tier.creator.clone(), earning_id),
+            &pending,
+        );
         env.events().publish(
             (Symbol::new(&env, "earning_pending"),),
             (tier.creator.clone(), earning_id, creator_amount, unlocks_at),
@@ -647,7 +671,11 @@ impl StarPassContract {
                 .set(&DataKey::PendingEarningCount(tier.creator.clone()), &next);
             cnt
         };
-        let lock_period: u64 = env.storage().instance().get(&DataKey::LockPeriodSeconds).unwrap_or(0u64);
+        let lock_period: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LockPeriodSeconds)
+            .unwrap_or(0u64);
         let unlocks_at = env.ledger().timestamp().saturating_add(lock_period); // ARITHMETIC: saturating
         let pending = PendingEarning {
             creator: tier.creator.clone(),
@@ -657,9 +685,10 @@ impl StarPassContract {
             released: false,
             earning_id,
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::PendingEarning(tier.creator.clone(), earning_id), &pending);
+        env.storage().persistent().set(
+            &DataKey::PendingEarning(tier.creator.clone(), earning_id),
+            &pending,
+        );
         env.events().publish(
             (Symbol::new(&env, "earning_pending"),),
             (tier.creator.clone(), earning_id, creator_amount, unlocks_at),
@@ -723,6 +752,18 @@ impl StarPassContract {
 
         assert!(balance > 0, "No balance to withdraw");
 
+        // Retrieve minimum withdrawal threshold from configuration
+        let min_withdrawal: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinWithdrawal)
+            .unwrap_or(1_000_000_i128);
+
+        assert!(
+            balance >= min_withdrawal,
+            "Withdrawal amount below minimum threshold"
+        );
+
         let token: Address = env
             .storage()
             .instance()
@@ -738,6 +779,32 @@ impl StarPassContract {
 
         env.events()
             .publish((Symbol::new(&env, "creator_withdrew"),), (creator, balance));
+    }
+
+    /// Updates the minimum withdrawal threshold (Admin only)
+    pub fn update_min_withdrawal(env: Env, admin: Address, new_min: i128) {
+        admin.require_auth();
+
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Admin not set");
+        assert!(admin == stored_admin, "Unauthorized");
+
+        assert!(new_min >= 0, "Minimum withdrawal cannot be negative");
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MinWithdrawal, &new_min);
+    }
+
+    /// Returns the current minimum withdrawal threshold
+    pub fn get_min_withdrawal(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MinWithdrawal)
+            .unwrap_or(1_000_000_i128)
     }
 
     /// Moves all matured PendingEarning records for creator to the creator's
@@ -808,7 +875,12 @@ impl StarPassContract {
         if env.storage().instance().has(&prop_key) {
             return Err(Error::ProposalAlreadyExists);
         }
-        let proposal = (admin.clone(), creator.clone(), earning_id, env.ledger().timestamp());
+        let proposal = (
+            admin.clone(),
+            creator.clone(),
+            earning_id,
+            env.ledger().timestamp(),
+        );
         env.storage().instance().set(&prop_key, &proposal);
         env.events().publish(
             (Symbol::new(&env, "early_release_proposed"),),
@@ -831,7 +903,11 @@ impl StarPassContract {
             return Err(Error::UnauthorizedApproval);
         }
         let key = DataKey::PendingEarning(creator.clone(), earning_id);
-        let mut pending: PendingEarning = env.storage().persistent().get(&key).ok_or(Error::EarningNotFound)?;
+        let mut pending: PendingEarning = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::EarningNotFound)?;
         if pending.released {
             return Err(Error::EarningAlreadyReleased);
         }
@@ -852,7 +928,13 @@ impl StarPassContract {
         env.storage().instance().remove(&prop_key);
         env.events().publish(
             (Symbol::new(&env, "early_release_executed"),),
-            (admin, creator, earning_id, pending.amount, env.ledger().timestamp()),
+            (
+                admin,
+                creator,
+                earning_id,
+                pending.amount,
+                env.ledger().timestamp(),
+            ),
         );
         Ok(())
     }
@@ -866,7 +948,11 @@ impl StarPassContract {
             .unwrap_or(0u64);
         let mut out: Vec<PendingEarning> = Vec::new(&env);
         for id in 0..count {
-            if let Some(p) = env.storage().persistent().get(&DataKey::PendingEarning(creator.clone(), id)) {
+            if let Some(p) = env
+                .storage()
+                .persistent()
+                .get(&DataKey::PendingEarning(creator.clone(), id))
+            {
                 out.push_back(p);
             }
         }
