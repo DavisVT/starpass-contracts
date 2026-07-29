@@ -11,6 +11,11 @@ use soroban_sdk::{
 //   `CreatorBalance`; instead they create `PendingEarning` records keyed by
 //   `(creator, earning_id)` and increment `PendingEarningCount(creator)`.
 // - New types: `PendingEarning` struct added; `Error` enum appended.
+// - Pause/Resume: Pass struct extended with `paused: bool`, `paused_at: u64`,
+//   `total_paused_seconds: u64`. `pause_pass` freezes expiry clock;
+//   `resume_pass` extends `expires_at` by pause duration and accumulates
+//   `total_paused_seconds`. `has_valid_pass`/`has_any_valid_pass`/
+//   `get_fan_active_passes` reject paused passes.
 // - Release paths:
 //   * Normal: `process_unlocked_earnings(env, creator)` iterates pending
 //     earnings and moves matured ones to `CreatorBalance` (maturity check: `now > unlocks_at`).
@@ -18,8 +23,8 @@ use soroban_sdk::{
 //     a proposal in instance storage; `approve_early_release(creator, earning_id)` co-signs
 //     and executes release, removing the proposal.
 // - Storage keys: `PendingEarningCount`, `PendingEarning(creator,id)`, `EarlyReleaseProposal(id)`.
-// - Events: `earning_pending`, `earning_released`, `early_release_proposed`, `early_release_executed`, `lock_period_updated`.
-
+// - Events: `earning_pending`, `earning_released`, `early_release_proposed`, `early_release_executed`, `lock_period_updated`,
+//   `pass_paused`, `pass_resumed`.
 
 // ============================================================
 // Data Types
@@ -51,6 +56,9 @@ pub struct Pass {
     pub purchased_at: u64,
     pub expires_at: u64,
     pub active: bool,
+    pub paused: bool,
+    pub paused_at: u64,
+    pub total_paused_seconds: u64,
 }
 
 /// Creator profile registered on-chain
@@ -83,8 +91,8 @@ pub enum DataKey {
     PendingEarning(Address, u64),
     /// Early release proposal keyed by earning_id (instance storage)
     EarlyReleaseProposal(u64),
-    FanPasses(Address),      // fan address -> Vec<u64> pass IDs
-    CreatorTiers(Address),   // creator address -> Vec<u32> tier IDs
+    FanPasses(Address),    // fan address -> Vec<u64> pass IDs
+    CreatorTiers(Address), // creator address -> Vec<u32> tier IDs
     ContractVersion,
 }
 
@@ -214,12 +222,20 @@ impl StarPassContract {
     /// Updates the lock period for future PendingEarning records.
     ///
     /// Requires admin authentication.
-    pub fn update_lock_period(env: Env, admin: Address, new_period_seconds: u64) -> Result<(), Error> {
+    pub fn update_lock_period(
+        env: Env,
+        admin: Address,
+        new_period_seconds: u64,
+    ) -> Result<(), Error> {
         admin.require_auth();
         if new_period_seconds == 0 {
             return Err(Error::InvalidLockPeriod);
         }
-        let old: u64 = env.storage().instance().get(&DataKey::LockPeriodSeconds).unwrap_or(0);
+        let old: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LockPeriodSeconds)
+            .unwrap_or(0);
         env.storage()
             .instance()
             .set(&DataKey::LockPeriodSeconds, &new_period_seconds);
@@ -508,7 +524,11 @@ impl StarPassContract {
                 .set(&DataKey::PendingEarningCount(tier.creator.clone()), &next);
             cnt
         };
-        let lock_period: u64 = env.storage().instance().get(&DataKey::LockPeriodSeconds).unwrap_or(0u64);
+        let lock_period: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LockPeriodSeconds)
+            .unwrap_or(0u64);
         let unlocks_at = env.ledger().timestamp().saturating_add(lock_period); // ARITHMETIC: saturating
         let pending = PendingEarning {
             creator: tier.creator.clone(),
@@ -518,9 +538,10 @@ impl StarPassContract {
             released: false,
             earning_id,
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::PendingEarning(tier.creator.clone(), earning_id), &pending);
+        env.storage().persistent().set(
+            &DataKey::PendingEarning(tier.creator.clone(), earning_id),
+            &pending,
+        );
         env.events().publish(
             (Symbol::new(&env, "earning_pending"),),
             (tier.creator.clone(), earning_id, creator_amount, unlocks_at),
@@ -556,6 +577,9 @@ impl StarPassContract {
             purchased_at: now,
             expires_at: now + tier.duration,
             active: true,
+            paused: false,
+            paused_at: 0,
+            total_paused_seconds: 0,
         };
 
         env.storage()
@@ -647,7 +671,11 @@ impl StarPassContract {
                 .set(&DataKey::PendingEarningCount(tier.creator.clone()), &next);
             cnt
         };
-        let lock_period: u64 = env.storage().instance().get(&DataKey::LockPeriodSeconds).unwrap_or(0u64);
+        let lock_period: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LockPeriodSeconds)
+            .unwrap_or(0u64);
         let unlocks_at = env.ledger().timestamp().saturating_add(lock_period); // ARITHMETIC: saturating
         let pending = PendingEarning {
             creator: tier.creator.clone(),
@@ -657,9 +685,10 @@ impl StarPassContract {
             released: false,
             earning_id,
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::PendingEarning(tier.creator.clone(), earning_id), &pending);
+        env.storage().persistent().set(
+            &DataKey::PendingEarning(tier.creator.clone(), earning_id),
+            &pending,
+        );
         env.events().publish(
             (Symbol::new(&env, "earning_pending"),),
             (tier.creator.clone(), earning_id, creator_amount, unlocks_at),
@@ -697,6 +726,77 @@ impl StarPassContract {
         );
 
         new_expires_at
+    }
+
+    // --------------------------------------------------------
+    // Pass Pause / Resume
+    // --------------------------------------------------------
+
+    /// Pause an active, non-expired pass.
+    ///
+    /// Pass owner only. Freezes the expiry clock while paused.
+    /// Panics if the caller is not the pass owner, the pass is not
+    /// active, the pass is already paused, or the pass has expired.
+    pub fn pause_pass(env: Env, fan: Address, pass_id: u64) {
+        fan.require_auth();
+
+        let mut pass: Pass = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Pass(pass_id))
+            .expect("Pass not found");
+
+        assert!(pass.owner == fan, "Not the pass owner");
+        assert!(pass.active, "Pass is not active");
+        assert!(!pass.paused, "Pass is already paused");
+        let now = env.ledger().timestamp();
+        assert!(pass.expires_at > now, "Pass has expired");
+
+        pass.paused = true;
+        pass.paused_at = now;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Pass(pass_id), &pass);
+
+        env.events()
+            .publish((Symbol::new(&env, "pass_paused"),), (pass_id, fan, now));
+    }
+
+    /// Resume a paused pass, extending its expiry by the time it was paused.
+    ///
+    /// Pass owner only. Adds the pause duration to `expires_at` and
+    /// accumulates it in `total_paused_seconds`. Panics if the caller is
+    /// not the pass owner, the pass is not paused, or the pass is not active.
+    pub fn resume_pass(env: Env, fan: Address, pass_id: u64) {
+        fan.require_auth();
+
+        let mut pass: Pass = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Pass(pass_id))
+            .expect("Pass not found");
+
+        assert!(pass.owner == fan, "Not the pass owner");
+        assert!(pass.paused, "Pass is not paused");
+        assert!(pass.active, "Pass is not active");
+
+        let now = env.ledger().timestamp();
+        let paused_duration = now - pass.paused_at;
+
+        pass.expires_at = pass.expires_at.saturating_add(paused_duration);
+        pass.total_paused_seconds = pass.total_paused_seconds.saturating_add(paused_duration);
+        pass.paused = false;
+        pass.paused_at = 0;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Pass(pass_id), &pass);
+
+        env.events().publish(
+            (Symbol::new(&env, "pass_resumed"),),
+            (pass_id, fan, now, paused_duration),
+        );
     }
 
     // --------------------------------------------------------
@@ -808,7 +908,12 @@ impl StarPassContract {
         if env.storage().instance().has(&prop_key) {
             return Err(Error::ProposalAlreadyExists);
         }
-        let proposal = (admin.clone(), creator.clone(), earning_id, env.ledger().timestamp());
+        let proposal = (
+            admin.clone(),
+            creator.clone(),
+            earning_id,
+            env.ledger().timestamp(),
+        );
         env.storage().instance().set(&prop_key, &proposal);
         env.events().publish(
             (Symbol::new(&env, "early_release_proposed"),),
@@ -831,7 +936,11 @@ impl StarPassContract {
             return Err(Error::UnauthorizedApproval);
         }
         let key = DataKey::PendingEarning(creator.clone(), earning_id);
-        let mut pending: PendingEarning = env.storage().persistent().get(&key).ok_or(Error::EarningNotFound)?;
+        let mut pending: PendingEarning = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::EarningNotFound)?;
         if pending.released {
             return Err(Error::EarningAlreadyReleased);
         }
@@ -852,7 +961,13 @@ impl StarPassContract {
         env.storage().instance().remove(&prop_key);
         env.events().publish(
             (Symbol::new(&env, "early_release_executed"),),
-            (admin, creator, earning_id, pending.amount, env.ledger().timestamp()),
+            (
+                admin,
+                creator,
+                earning_id,
+                pending.amount,
+                env.ledger().timestamp(),
+            ),
         );
         Ok(())
     }
@@ -866,7 +981,11 @@ impl StarPassContract {
             .unwrap_or(0u64);
         let mut out: Vec<PendingEarning> = Vec::new(&env);
         for id in 0..count {
-            if let Some(p) = env.storage().persistent().get(&DataKey::PendingEarning(creator.clone(), id)) {
+            if let Some(p) = env
+                .storage()
+                .persistent()
+                .get(&DataKey::PendingEarning(creator.clone(), id))
+            {
                 out.push_back(p);
             }
         }
@@ -894,7 +1013,7 @@ impl StarPassContract {
                 Some(p) => p,
                 None => continue,
             };
-            if pass.tier_id == tier_id && pass.active && pass.expires_at > now {
+            if pass.tier_id == tier_id && pass.active && !pass.paused && pass.expires_at > now {
                 return true;
             }
         }
@@ -918,7 +1037,7 @@ impl StarPassContract {
                 Some(p) => p,
                 None => continue,
             };
-            if pass.creator == creator && pass.active && pass.expires_at > now {
+            if pass.creator == creator && pass.active && !pass.paused && pass.expires_at > now {
                 return true;
             }
         }
@@ -1049,7 +1168,7 @@ impl StarPassContract {
                 Some(p) => p,
                 None => continue,
             };
-            if pass.active && pass.expires_at > now {
+            if pass.active && !pass.paused && pass.expires_at > now {
                 active.push_back(pass_id);
             }
         }
@@ -1868,7 +1987,139 @@ mod tests {
         let result = client.try_upgrade(&admin, &wasm_hash);
         // May succeed or fail depending on test env deployer support,
         // but should not panic about auth (mock_all_auths is set).
-        // This at minimum exercises the function path.
+        // This at least exercises the function path.
         let _ = result;
+    }
+
+    // --------------------------------------------------------
+    // Pause / Resume Tests
+    // --------------------------------------------------------
+
+    #[test]
+    fn test_pause_then_resume_extends_expiry() {
+        let (env, contract_id, _admin, creator, fan, _token) = setup_env();
+        let client = StarPassContractClient::new(&env, &contract_id);
+        client.register_creator(&creator);
+
+        let duration = 2_592_000u64;
+        let start = 1_000_000u64;
+        env.ledger().set_timestamp(start);
+
+        let tier_id = client.create_tier(
+            &creator,
+            &String::from_str(&env, "Bronze"),
+            &1_000_000i128,
+            &duration,
+            &0u32,
+        );
+
+        let pass_id = client.mint_pass(&fan, &tier_id);
+        let original_expires_at = client.get_pass(&pass_id).expires_at;
+        assert_eq!(original_expires_at, start + duration);
+
+        // Pause the pass at time start + 1000
+        env.ledger().set_timestamp(start + 1_000);
+        client.pause_pass(&fan, &pass_id);
+
+        let paused_pass = client.get_pass(&pass_id);
+        assert!(paused_pass.paused);
+        assert_eq!(paused_pass.paused_at, start + 1_000);
+
+        // has_valid_pass must return false while paused
+        assert_eq!(client.has_valid_pass(&fan, &tier_id), false);
+
+        // Advance time by 500 seconds while paused
+        env.ledger().set_timestamp(start + 1_500);
+
+        // Resume the pass — paused duration (500s) should be added to expires_at
+        client.resume_pass(&fan, &pass_id);
+
+        let resumed_pass = client.get_pass(&pass_id);
+        assert!(!resumed_pass.paused);
+        assert_eq!(resumed_pass.paused_at, 0);
+        assert_eq!(resumed_pass.total_paused_seconds, 500);
+        assert_eq!(resumed_pass.expires_at, original_expires_at + 500);
+
+        // has_valid_pass should return true again
+        assert_eq!(client.has_valid_pass(&fan, &tier_id), true);
+    }
+
+    #[test]
+    fn test_paused_pass_returns_invalid() {
+        let (env, contract_id, _admin, creator, fan, _token) = setup_env();
+        let client = StarPassContractClient::new(&env, &contract_id);
+        client.register_creator(&creator);
+
+        let duration = 2_592_000u64;
+        let start = 1_000_000u64;
+        env.ledger().set_timestamp(start);
+
+        let tier_id = client.create_tier(
+            &creator,
+            &String::from_str(&env, "Bronze"),
+            &1_000_000i128,
+            &duration,
+            &0u32,
+        );
+
+        let pass_id = client.mint_pass(&fan, &tier_id);
+        assert_eq!(client.has_valid_pass(&fan, &tier_id), true);
+
+        env.ledger().set_timestamp(start + 500);
+        client.pause_pass(&fan, &pass_id);
+
+        assert_eq!(client.has_valid_pass(&fan, &tier_id), false);
+    }
+
+    #[test]
+    fn test_double_pause_panics() {
+        let (env, contract_id, _admin, creator, fan, _token) = setup_env();
+        let client = StarPassContractClient::new(&env, &contract_id);
+        client.register_creator(&creator);
+
+        let duration = 2_592_000u64;
+        let start = 1_000_000u64;
+        env.ledger().set_timestamp(start);
+
+        let tier_id = client.create_tier(
+            &creator,
+            &String::from_str(&env, "Bronze"),
+            &1_000_000i128,
+            &duration,
+            &0u32,
+        );
+
+        let pass_id = client.mint_pass(&fan, &tier_id);
+
+        env.ledger().set_timestamp(start + 500);
+        client.pause_pass(&fan, &pass_id);
+
+        // Second pause should panic
+        let result = client.try_pause_pass(&fan, &pass_id);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resume_without_pause_panics() {
+        let (env, contract_id, _admin, creator, fan, _token) = setup_env();
+        let client = StarPassContractClient::new(&env, &contract_id);
+        client.register_creator(&creator);
+
+        let duration = 2_592_000u64;
+        let start = 1_000_000u64;
+        env.ledger().set_timestamp(start);
+
+        let tier_id = client.create_tier(
+            &creator,
+            &String::from_str(&env, "Bronze"),
+            &1_000_000i128,
+            &duration,
+            &0u32,
+        );
+
+        let pass_id = client.mint_pass(&fan, &tier_id);
+
+        let result = client.try_resume_pass(&fan, &pass_id);
+        assert!(result.is_err());
     }
 }
