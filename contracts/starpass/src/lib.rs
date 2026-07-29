@@ -1010,6 +1010,52 @@ impl StarPassContract {
             .unwrap_or(Vec::new(&env))
     }
 
+    /// Returns full [`Pass`] structs for all pass IDs owned by the given fan address.
+    ///
+    /// Read-only, no auth required. Returns an empty `Vec` if the fan has never
+    /// minted a pass.
+    pub fn get_fan_pass_details(env: Env, fan: Address) -> Vec<Pass> {
+        let fan_passes: Vec<u64> = match env.storage().persistent().get(&DataKey::FanPasses(fan)) {
+            Some(p) => p,
+            None => return Vec::new(&env),
+        };
+
+        let mut passes = Vec::new(&env);
+        for pass_id in fan_passes.iter() {
+            let pass: Pass = match env.storage().persistent().get(&DataKey::Pass(pass_id)) {
+                Some(p) => p,
+                None => continue,
+            };
+            passes.push_back(pass);
+        }
+        passes
+    }
+
+    /// Returns pass IDs for all active, non-expired passes owned by the given fan address.
+    ///
+    /// A pass is considered active when `active == true` and `expires_at > current_ledger_timestamp`.
+    ///
+    /// Read-only, no auth required. Returns an empty `Vec` if the fan has no active passes.
+    pub fn get_fan_active_passes(env: Env, fan: Address) -> Vec<u64> {
+        let fan_passes: Vec<u64> = match env.storage().persistent().get(&DataKey::FanPasses(fan)) {
+            Some(p) => p,
+            None => return Vec::new(&env),
+        };
+        let now = env.ledger().timestamp();
+
+        let mut active = Vec::new(&env);
+        for pass_id in fan_passes.iter() {
+            let pass: Pass = match env.storage().persistent().get(&DataKey::Pass(pass_id)) {
+                Some(p) => p,
+                None => continue,
+            };
+            if pass.active && pass.expires_at > now {
+                active.push_back(pass_id);
+            }
+        }
+        active
+    }
+
     /// Returns all tier IDs created by the given creator address.
     ///
     /// Read-only, no auth required. Returns an empty `Vec` if the creator has
@@ -1548,6 +1594,66 @@ mod tests {
 
         let passes = client.get_fan_passes(&fan);
         assert_eq!(passes.len(), 2);
+    }
+
+    #[test]
+    fn test_fan_pass_details_and_active_passes() {
+        let (env, contract_id, _admin, creator, fan, token) = setup_env();
+        let client = StarPassContractClient::new(&env, &contract_id);
+        client.register_creator(&creator);
+
+        StellarAssetClient::new(&env, &token).mint(&fan, &100_000_000);
+
+        let start = 1_000_000u64;
+        let long_duration = 604_800u64; // 7 days
+        let short_duration = 86_400u64; // 1 day
+
+        let tier1 = client.create_tier(
+            &creator,
+            &String::from_str(&env, "Annual"),
+            &10_000_000i128,
+            &long_duration,
+            &0u32,
+        );
+
+        let tier2 = client.create_tier(
+            &creator,
+            &String::from_str(&env, "Daily"),
+            &500_000i128,
+            &short_duration,
+            &0u32,
+        );
+
+        env.ledger().set_timestamp(start);
+        let short_lived_pass_id = client.mint_pass(&fan, &tier2);
+
+        env.ledger().set_timestamp(start + short_duration + 1);
+        let long_lived_pass_id = client.mint_pass(&fan, &tier1);
+
+        let all_details = client.get_fan_pass_details(&fan);
+        assert_eq!(all_details.len(), 2);
+
+        let active_ids = client.get_fan_active_passes(&fan);
+        assert_eq!(active_ids.len(), 1);
+        assert_eq!(active_ids.get(0).unwrap(), &long_lived_pass_id);
+
+        let mut found_short = false;
+        let mut found_long = false;
+        for pass in all_details.iter() {
+            if pass.pass_id == long_lived_pass_id {
+                assert!(pass.active);
+                assert_eq!(pass.owner, fan);
+                assert_eq!(pass.tier_id, tier1);
+                found_long = true;
+            } else if pass.pass_id == short_lived_pass_id {
+                assert!(pass.active);
+                assert_eq!(pass.owner, fan);
+                assert_eq!(pass.tier_id, tier2);
+                found_short = true;
+            }
+        }
+        assert!(found_short);
+        assert!(found_long);
     }
 
     // --------------------------------------------------------
