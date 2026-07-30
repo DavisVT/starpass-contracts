@@ -66,11 +66,14 @@ pub struct Creator {
 /// Storage keys
 #[contracttype]
 pub enum DataKey {
+    /// Storage keys
     Admin,
     Token,          // USDC token address
     ProtocolFeeBps, // basis points e.g. 250 = 2.5%
     /// Duration in seconds that earnings are locked before becoming withdrawable
     LockPeriodSeconds,
+    /// Minimum threshold required for creator revenue withdrawals
+    MinWithdrawal, // <-- ADD THIS LINE
     Creator(Address),
     Tier(u32), // tier_id -> Tier
     TierCount,
@@ -183,6 +186,11 @@ impl StarPassContract {
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &1u32);
+
+        // Set default minimum withdrawal threshold (1,000,000 stroops / 1 USDC)
+        env.storage()
+            .instance()
+            .set(&DataKey::MinWithdrawal, &1_000_000_i128);
 
         env.events().publish(
             (Symbol::new(&env, "initialized"),),
@@ -744,6 +752,18 @@ impl StarPassContract {
 
         assert!(balance > 0, "No balance to withdraw");
 
+        // Retrieve minimum withdrawal threshold from configuration
+        let min_withdrawal: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinWithdrawal)
+            .unwrap_or(1_000_000_i128);
+
+        assert!(
+            balance >= min_withdrawal,
+            "Withdrawal amount below minimum threshold"
+        );
+
         let token: Address = env
             .storage()
             .instance()
@@ -759,6 +779,32 @@ impl StarPassContract {
 
         env.events()
             .publish((Symbol::new(&env, "creator_withdrew"),), (creator, balance));
+    }
+
+    /// Updates the minimum withdrawal threshold (Admin only)
+    pub fn update_min_withdrawal(env: Env, admin: Address, new_min: i128) {
+        admin.require_auth();
+
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Admin not set");
+        assert!(admin == stored_admin, "Unauthorized");
+
+        assert!(new_min >= 0, "Minimum withdrawal cannot be negative");
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MinWithdrawal, &new_min);
+    }
+
+    /// Returns the current minimum withdrawal threshold
+    pub fn get_min_withdrawal(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MinWithdrawal)
+            .unwrap_or(1_000_000_i128)
     }
 
     /// Moves all matured PendingEarning records for creator to the creator's
