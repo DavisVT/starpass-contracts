@@ -492,6 +492,18 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "LockPeriodSeconds"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": 3600
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "PassCount"
                             }
                           ]
@@ -1191,7 +1203,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Price must be greater than zero' from contract function 'Symbol(obj#227)'"
+                  "string": "caught panic 'Price must be greater than zero' from contract function 'Symbol(obj#231)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
