@@ -683,6 +683,18 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "LockPeriodSeconds"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": 3600
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "PassCount"
                             }
                           ]
@@ -1487,7 +1499,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Not the tier creator' from contract function 'Symbol(obj#295)'"
+                  "string": "caught panic 'Not the tier creator' from contract function 'Symbol(obj#299)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
