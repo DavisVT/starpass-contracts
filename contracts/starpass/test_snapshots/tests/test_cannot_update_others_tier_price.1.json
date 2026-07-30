@@ -65,6 +65,9 @@
                 },
                 {
                   "u32": 250
+                },
+                {
+                  "u64": 3600
                 }
               ]
             }
@@ -673,6 +676,18 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "LockPeriodSeconds"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": 3600
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "PassCount"
                             }
                           ]
@@ -1173,6 +1188,9 @@
                 },
                 {
                   "u32": 250
+                },
+                {
+                  "u64": 3600
                 }
               ]
             }
@@ -1203,6 +1221,9 @@
                 },
                 {
                   "u32": 250
+                },
+                {
+                  "u64": 3600
                 }
               ]
             }
@@ -1464,7 +1485,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Not the tier creator' from contract function 'Symbol(obj#291)'"
+                  "string": "caught panic 'Not the tier creator' from contract function 'Symbol(obj#299)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"

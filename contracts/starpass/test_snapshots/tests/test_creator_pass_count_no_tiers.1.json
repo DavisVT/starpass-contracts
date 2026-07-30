@@ -492,18 +492,6 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "LockPeriodSeconds"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u64": 3600
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
                               "symbol": "PassCount"
                             }
                           ]
@@ -1158,7 +1146,7 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000006"
               },
               {
-                "symbol": "get_creator"
+                "symbol": "get_creator_pass_count"
               }
             ],
             "data": {
@@ -1181,47 +1169,11 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "get_creator"
+                "symbol": "get_creator_pass_count"
               }
             ],
             "data": {
-              "map": [
-                {
-                  "key": {
-                    "symbol": "address"
-                  },
-                  "val": {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "pass_count"
-                  },
-                  "val": {
-                    "u64": 0
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "registered_at"
-                  },
-                  "val": {
-                    "u64": 0
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "total_earned"
-                  },
-                  "val": {
-                    "i128": {
-                      "hi": 0,
-                      "lo": 0
-                    }
-                  }
-                }
-              ]
+              "u64": 0
             }
           }
         }
