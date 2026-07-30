@@ -12,6 +12,11 @@ use soroban_sdk::{
 //   `CreatorBalance`; instead they create `PendingEarning` records keyed by
 //   `(creator, earning_id)` and increment `PendingEarningCount(creator)`.
 // - New types: `PendingEarning` struct added; `Error` enum appended.
+// - Pause/Resume: Pass struct extended with `paused: bool`, `paused_at: u64`,
+//   `total_paused_seconds: u64`. `pause_pass` freezes expiry clock;
+//   `resume_pass` extends `expires_at` by pause duration and accumulates
+//   `total_paused_seconds`. `has_valid_pass`/`has_any_valid_pass`/
+//   `get_fan_active_passes` reject paused passes.
 // - Release paths:
 //   * Normal: `process_unlocked_earnings(env, creator)` iterates pending
 //     earnings and moves matured ones to `CreatorBalance` (maturity check: `now > unlocks_at`).
@@ -51,6 +56,9 @@ pub struct Pass {
     pub purchased_at: u64,
     pub expires_at: u64,
     pub active: bool,
+    pub paused: bool,
+    pub paused_at: u64,
+    pub total_paused_seconds: u64,
 }
 
 /// Creator profile registered on-chain
@@ -580,6 +588,9 @@ impl StarPassContract {
             purchased_at: now,
             expires_at: now + tier.duration,
             active: true,
+            paused: false,
+            paused_at: 0,
+            total_paused_seconds: 0,
         };
 
         env.storage()
@@ -726,6 +737,77 @@ impl StarPassContract {
         );
 
         new_expires_at
+    }
+
+    // --------------------------------------------------------
+    // Pass Pause / Resume
+    // --------------------------------------------------------
+
+    /// Pause an active, non-expired pass.
+    ///
+    /// Pass owner only. Freezes the expiry clock while paused.
+    /// Panics if the caller is not the pass owner, the pass is not
+    /// active, the pass is already paused, or the pass has expired.
+    pub fn pause_pass(env: Env, fan: Address, pass_id: u64) {
+        fan.require_auth();
+
+        let mut pass: Pass = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Pass(pass_id))
+            .expect("Pass not found");
+
+        assert!(pass.owner == fan, "Not the pass owner");
+        assert!(pass.active, "Pass is not active");
+        assert!(!pass.paused, "Pass is already paused");
+        let now = env.ledger().timestamp();
+        assert!(pass.expires_at > now, "Pass has expired");
+
+        pass.paused = true;
+        pass.paused_at = now;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Pass(pass_id), &pass);
+
+        env.events()
+            .publish((Symbol::new(&env, "pass_paused"),), (pass_id, fan, now));
+    }
+
+    /// Resume a paused pass, extending its expiry by the time it was paused.
+    ///
+    /// Pass owner only. Adds the pause duration to `expires_at` and
+    /// accumulates it in `total_paused_seconds`. Panics if the caller is
+    /// not the pass owner, the pass is not paused, or the pass is not active.
+    pub fn resume_pass(env: Env, fan: Address, pass_id: u64) {
+        fan.require_auth();
+
+        let mut pass: Pass = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Pass(pass_id))
+            .expect("Pass not found");
+
+        assert!(pass.owner == fan, "Not the pass owner");
+        assert!(pass.paused, "Pass is not paused");
+        assert!(pass.active, "Pass is not active");
+
+        let now = env.ledger().timestamp();
+        let paused_duration = now - pass.paused_at;
+
+        pass.expires_at = pass.expires_at.saturating_add(paused_duration);
+        pass.total_paused_seconds = pass.total_paused_seconds.saturating_add(paused_duration);
+        pass.paused = false;
+        pass.paused_at = 0;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Pass(pass_id), &pass);
+
+        env.events().publish(
+            (Symbol::new(&env, "pass_resumed"),),
+            (pass_id, fan, now, paused_duration),
+        );
     }
 
     // --------------------------------------------------------
@@ -980,7 +1062,7 @@ impl StarPassContract {
                 Some(p) => p,
                 None => continue,
             };
-            if pass.tier_id == tier_id && pass.active && pass.expires_at > now {
+            if pass.tier_id == tier_id && pass.active && !pass.paused && pass.expires_at > now {
                 return true;
             }
         }
@@ -1004,7 +1086,7 @@ impl StarPassContract {
                 Some(p) => p,
                 None => continue,
             };
-            if pass.creator == creator && pass.active && pass.expires_at > now {
+            if pass.creator == creator && pass.active && !pass.paused && pass.expires_at > now {
                 return true;
             }
         }
@@ -1094,6 +1176,52 @@ impl StarPassContract {
             .persistent()
             .get(&DataKey::FanPasses(fan))
             .unwrap_or(Vec::new(&env))
+    }
+
+    /// Returns full [`Pass`] structs for all pass IDs owned by the given fan address.
+    ///
+    /// Read-only, no auth required. Returns an empty `Vec` if the fan has never
+    /// minted a pass.
+    pub fn get_fan_pass_details(env: Env, fan: Address) -> Vec<Pass> {
+        let fan_passes: Vec<u64> = match env.storage().persistent().get(&DataKey::FanPasses(fan)) {
+            Some(p) => p,
+            None => return Vec::new(&env),
+        };
+
+        let mut passes = Vec::new(&env);
+        for pass_id in fan_passes.iter() {
+            let pass: Pass = match env.storage().persistent().get(&DataKey::Pass(pass_id)) {
+                Some(p) => p,
+                None => continue,
+            };
+            passes.push_back(pass);
+        }
+        passes
+    }
+
+    /// Returns pass IDs for all active, non-expired passes owned by the given fan address.
+    ///
+    /// A pass is considered active when `active == true` and `expires_at > current_ledger_timestamp`.
+    ///
+    /// Read-only, no auth required. Returns an empty `Vec` if the fan has no active passes.
+    pub fn get_fan_active_passes(env: Env, fan: Address) -> Vec<u64> {
+        let fan_passes: Vec<u64> = match env.storage().persistent().get(&DataKey::FanPasses(fan)) {
+            Some(p) => p,
+            None => return Vec::new(&env),
+        };
+        let now = env.ledger().timestamp();
+
+        let mut active = Vec::new(&env);
+        for pass_id in fan_passes.iter() {
+            let pass: Pass = match env.storage().persistent().get(&DataKey::Pass(pass_id)) {
+                Some(p) => p,
+                None => continue,
+            };
+            if pass.active && !pass.paused && pass.expires_at > now {
+                active.push_back(pass_id);
+            }
+        }
+        active
     }
 
     /// Returns all tier IDs created by the given creator address.
@@ -1954,6 +2082,66 @@ mod tests {
         assert_eq!(passes.len(), 2);
     }
 
+    #[test]
+    fn test_fan_pass_details_and_active_passes() {
+        let (env, contract_id, _admin, creator, fan, token) = setup_env();
+        let client = StarPassContractClient::new(&env, &contract_id);
+        client.register_creator(&creator);
+
+        StellarAssetClient::new(&env, &token).mint(&fan, &100_000_000);
+
+        let start = 1_000_000u64;
+        let long_duration = 604_800u64; // 7 days
+        let short_duration = 86_400u64; // 1 day
+
+        let tier1 = client.create_tier(
+            &creator,
+            &String::from_str(&env, "Annual"),
+            &10_000_000i128,
+            &long_duration,
+            &0u32,
+        );
+
+        let tier2 = client.create_tier(
+            &creator,
+            &String::from_str(&env, "Daily"),
+            &500_000i128,
+            &short_duration,
+            &0u32,
+        );
+
+        env.ledger().set_timestamp(start);
+        let short_lived_pass_id = client.mint_pass(&fan, &tier2);
+
+        env.ledger().set_timestamp(start + short_duration + 1);
+        let long_lived_pass_id = client.mint_pass(&fan, &tier1);
+
+        let all_details = client.get_fan_pass_details(&fan);
+        assert_eq!(all_details.len(), 2);
+
+        let active_ids = client.get_fan_active_passes(&fan);
+        assert_eq!(active_ids.len(), 1);
+        assert_eq!(active_ids.get(0).unwrap(), &long_lived_pass_id);
+
+        let mut found_short = false;
+        let mut found_long = false;
+        for pass in all_details.iter() {
+            if pass.pass_id == long_lived_pass_id {
+                assert!(pass.active);
+                assert_eq!(pass.owner, fan);
+                assert_eq!(pass.tier_id, tier1);
+                found_long = true;
+            } else if pass.pass_id == short_lived_pass_id {
+                assert!(pass.active);
+                assert_eq!(pass.owner, fan);
+                assert_eq!(pass.tier_id, tier2);
+                found_short = true;
+            }
+        }
+        assert!(found_short);
+        assert!(found_long);
+    }
+
     // --------------------------------------------------------
     // get_creator_tiers_page tests
     // --------------------------------------------------------
@@ -2206,7 +2394,7 @@ mod tests {
         let result = client.try_upgrade(&admin, &wasm_hash);
         // May succeed or fail depending on test env deployer support,
         // but should not panic about auth (mock_all_auths is set).
-        // This at minimum exercises the function path.
+        // This at least exercises the function path.
         let _ = result;
     }
 
